@@ -1,43 +1,79 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Repeat2, Plus, Search, Bookmark, MapPin, X, ArrowUpRight } from 'lucide-react';
 import './styles.css';
 
-const starterItems = [
-  { id: 1, status: 'Lost', category: 'Bags', name: 'Black canvas backpack', age: '2 hours ago', location: 'Oakwood Library', description: 'Black daypack with a small mountain patch. Last seen near the second-floor study area.', image: 'photo-1553062407-98eeb64c6a62' },
-  { id: 2, status: 'Found', category: 'Keys', name: 'Silver house keys', age: '4 hours ago', location: 'Central Park', description: 'Three keys on a blue fabric loop, found beside the north entrance benches.', image: 'photo-1582139329536-e7284fece509' },
-  { id: 3, status: 'Found', category: 'Electronics', name: 'Black wireless headphones', age: 'Yesterday', location: 'Route 18 bus', description: 'Over-ear headphones in a soft case, left on the back seat of the evening bus.', image: 'photo-1505740420928-5e560c06d30e' },
-  { id: 4, status: 'Lost', category: 'Accessories', name: 'Brown leather watch', age: 'Yesterday', location: 'Mercer Street', description: 'Simple round face with a worn brown strap. It has a lot of sentimental value.', image: 'photo-1523275335684-37898b6baf30' },
-  { id: 5, status: 'Lost', category: 'Electronics', name: 'Phone in clear case', age: '2 days ago', location: 'Juniper Coffee', description: 'Black smartphone in a clear case with a tiny pressed flower tucked inside.', image: 'photo-1511707171634-5f897ff02aa9' },
-  { id: 6, status: 'Found', category: 'Accessories', name: 'Black-framed glasses', age: '2 days ago', location: 'Riverside Trail', description: 'Rectangular prescription glasses found near the bike repair station.', image: 'photo-1511499767150-a48a237f0083' },
-];
 const categories = ['All items', 'Electronics', 'Bags', 'Keys', 'Accessories', 'Pets'];
 
+async function api(path, options) {
+  const response = await fetch(path, options);
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || 'The server could not complete the request.');
+  return result;
+}
+
 function App() {
-  const [items, setItems] = useState(starterItems);
+  const [items, setItems] = useState([]);
+  const [stats, setStats] = useState({ total: 0, thisMonth: 0 });
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [saving, setSaving] = useState(false);
   const [category, setCategory] = useState('All items');
   const [status, setStatus] = useState('All');
   const [query, setQuery] = useState('');
-  const [saved, setSaved] = useState([]);
+  const [saved, setSaved] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('loop-saved-listings') || '[]'); } catch { return []; }
+  });
   const [dialog, setDialog] = useState(null);
   const [activeItem, setActiveItem] = useState(null);
-  const [form, setForm] = useState({ status: 'Lost', name: '', category: 'Electronics', location: '', description: '' });
+  const [form, setForm] = useState({ status: 'Lost', name: '', category: 'Electronics', location: '', description: '', imageUrl: '' });
+
+  useEffect(() => {
+    Promise.all([api('/api/listings'), api('/api/stats')])
+      .then(([listingData, statsData]) => {
+        setItems(listingData.listings);
+        setStats(statsData);
+        setLoadError('');
+      })
+      .catch(() => setLoadError('Could not connect to the server. Start the Node backend and refresh this page.'))
+      .finally(() => setLoading(false));
+  }, []);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return items.filter(item => (category === 'All items' || item.category === category) && (status === 'All' || item.status === status) && (!q || `${item.name} ${item.category} ${item.location} ${item.description}`.toLowerCase().includes(q)));
   }, [items, category, status, query]);
 
-  const submit = event => {
+  const submit = async event => {
     event.preventDefault();
-    const item = { ...form, id: Date.now(), age: 'Just now', image: 'photo-1494438639946-1ebd1d20bf85' };
-    setItems(current => [item, ...current]);
-    setCategory('All items'); setStatus('All'); setQuery(''); setDialog(null);
-    setForm({ status: 'Lost', name: '', category: 'Electronics', location: '', description: '' });
+    setSaving(true);
+    setLoadError('');
+    try {
+      const { listing } = await api('/api/listings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(form),
+      });
+      setItems(current => [listing, ...current]);
+      setStats(current => ({ total: current.total + 1, thisMonth: current.thisMonth + 1 }));
+      setCategory('All items'); setStatus('All'); setQuery(''); setDialog(null);
+      setForm({ status: 'Lost', name: '', category: 'Electronics', location: '', description: '', imageUrl: '' });
+    } catch (error) {
+      setLoadError(error.message);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const scrollTo = id => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' });
-  const toggleSaved = (event, id) => { event.stopPropagation(); setSaved(current => current.includes(id) ? current.filter(savedId => savedId !== id) : [...current, id]); };
+  const toggleSaved = (event, id) => {
+    event.stopPropagation();
+    setSaved(current => {
+      const next = current.includes(id) ? current.filter(savedId => savedId !== id) : [...current, id];
+      localStorage.setItem('loop-saved-listings', JSON.stringify(next));
+      return next;
+    });
+  };
 
   return <div className="site-shell">
     <header className="site-header">
@@ -57,7 +93,7 @@ function App() {
             <Search size={19}/><input aria-label="Search listings" placeholder="What are you looking for?" value={query} onChange={event => setQuery(event.target.value)}/>
             <button type="submit">Search listings</button>
           </form>
-          <div className="hero-stats"><span><b>329</b> items posted</span><i/><span><b>68%</b> reunited this month</span></div>
+          <div className="hero-stats"><span><b>{stats.total}</b> items posted</span><i/><span><b>{stats.thisMonth}</b> posted this month</span></div>
         </div>
       </section>
 
@@ -67,8 +103,9 @@ function App() {
         </div>
         <div className="category-row">{categories.map(value => <button key={value} className={`category-chip ${category === value ? 'active' : ''}`} onClick={() => setCategory(value)}>{value}</button>)}</div>
 
-        {filtered.length ? <div className="listing-grid">{filtered.map(item => <article key={item.id} className="listing-card" onClick={() => setActiveItem(item)}>
-          <div className="listing-image"><img src={`https://images.unsplash.com/${item.image}?auto=format&fit=crop&w=1000&q=85`} alt={item.name}/><span className={`status-tag ${item.status.toLowerCase()}`}>{item.status}</span><button className={`bookmark ${saved.includes(item.id) ? 'bookmarked' : ''}`} aria-label={saved.includes(item.id) ? 'Remove saved item' : 'Save item'} onClick={event => toggleSaved(event, item.id)}><Bookmark size={18} fill={saved.includes(item.id) ? 'currentColor' : 'none'}/></button></div>
+        {loadError && <div className="api-message" role="alert">{loadError}</div>}
+        {loading ? <div className="empty"><p>Loading listings…</p></div> : filtered.length ? <div className="listing-grid">{filtered.map(item => <article key={item.id} className="listing-card" onClick={() => setActiveItem(item)}>
+          <div className="listing-image">{item.imageUrl ? <img src={item.imageUrl} alt={item.name}/> : <div className="listing-photo-placeholder" aria-label="No photo provided"><Repeat2 size={38}/></div>}<span className={`status-tag ${item.status.toLowerCase()}`}>{item.status}</span><button className={`bookmark ${saved.includes(item.id) ? 'bookmarked' : ''}`} aria-label={saved.includes(item.id) ? 'Remove saved item' : 'Save item'} onClick={event => toggleSaved(event, item.id)}><Bookmark size={18} fill={saved.includes(item.id) ? 'currentColor' : 'none'}/></button></div>
           <div className="listing-info"><div className="listing-meta"><span>{item.category}</span><span>{item.age}</span></div><h3>{item.name}</h3><p className="description">{item.description}</p><div className="card-location"><MapPin size={15}/><b>{item.location}</b></div></div>
         </article>)}</div> : <div className="empty"><Search size={24}/><h3>No listings found</h3><p>Try a different search or filter to see what neighbors have posted.</p><button onClick={() => { setQuery(''); setCategory('All items'); setStatus('All'); }}>Clear filters</button></div>}
         <div className="results-count">Showing {filtered.length} of {items.length} listings</div>
@@ -78,8 +115,8 @@ function App() {
     </main>
     <footer><a href="#top" className="footer-logo">loop.</a><span>Built for kinder, more connected neighborhoods.</span><span>© 2025 Loop Community</span></footer>
 
-    {dialog === 'post' && <div className="overlay" onMouseDown={event => event.target === event.currentTarget && setDialog(null)}><section className="dialog" aria-labelledby="post-heading"><button className="dialog-close" onClick={() => setDialog(null)} aria-label="Close"><X size={19}/></button><div className="eyebrow">COMMUNITY BOARD</div><h2 id="post-heading">Post an item</h2><p>Give your neighbors the details they need to help.</p><form onSubmit={submit}><label>Is it lost or found?<div className="choice-row"><button type="button" className={form.status === 'Lost' ? 'chosen' : ''} onClick={() => setForm({ ...form, status: 'Lost' })}>Lost</button><button type="button" className={form.status === 'Found' ? 'chosen' : ''} onClick={() => setForm({ ...form, status: 'Found' })}>Found</button></div></label><label>Item name<input required value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} placeholder="e.g. Black canvas backpack"/></label><div className="form-pair"><label>Category<select value={form.category} onChange={event => setForm({ ...form, category: event.target.value })}>{categories.slice(1).map(value => <option key={value}>{value}</option>)}</select></label><label>Location<input required value={form.location} onChange={event => setForm({ ...form, location: event.target.value })} placeholder="Where was it seen?"/></label></div><label>Details<textarea rows="3" value={form.description} onChange={event => setForm({ ...form, description: event.target.value })} placeholder="Color, identifying marks, or other helpful details"/></label><button className="submit-post" type="submit">Post listing <ArrowUpRight size={16}/></button><small>Your personal contact information stays private.</small></form></section></div>}
-    {activeItem && <div className="overlay" onMouseDown={event => event.target === event.currentTarget && setActiveItem(null)}><section className="dialog detail-dialog"><button className="dialog-close" onClick={() => setActiveItem(null)} aria-label="Close"><X size={19}/></button><img className="detail-photo" src={`https://images.unsplash.com/${activeItem.image}?auto=format&fit=crop&w=1000&q=85`} alt={activeItem.name}/><span className={`status-tag detail-status ${activeItem.status.toLowerCase()}`}>{activeItem.status}</span><div className="listing-meta"><span>{activeItem.category}</span><span>{activeItem.age}</span></div><h2>{activeItem.name}</h2><p>{activeItem.description}</p><div className="card-location"><MapPin size={15}/><b>{activeItem.location}</b></div><button className="submit-post" onClick={() => setActiveItem(null)}>I recognize this item <ArrowUpRight size={16}/></button><small>Connect safely and arrange a public handoff.</small></section></div>}
+    {dialog === 'post' && <div className="overlay" onMouseDown={event => event.target === event.currentTarget && setDialog(null)}><section className="dialog" aria-labelledby="post-heading"><button className="dialog-close" onClick={() => setDialog(null)} aria-label="Close"><X size={19}/></button><div className="eyebrow">COMMUNITY BOARD</div><h2 id="post-heading">Post an item</h2><p>Give your neighbors the details they need to help.</p>{loadError && <div className="api-message" role="alert">{loadError}</div>}<form onSubmit={submit}><label>Is it lost or found?<div className="choice-row"><button type="button" className={form.status === 'Lost' ? 'chosen' : ''} onClick={() => setForm({ ...form, status: 'Lost' })}>Lost</button><button type="button" className={form.status === 'Found' ? 'chosen' : ''} onClick={() => setForm({ ...form, status: 'Found' })}>Found</button></div></label><label>Item name<input required maxLength="100" value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} placeholder="e.g. Black canvas backpack"/></label><div className="form-pair"><label>Category<select value={form.category} onChange={event => setForm({ ...form, category: event.target.value })}>{categories.slice(1).map(value => <option key={value}>{value}</option>)}</select></label><label>Location<input required maxLength="120" value={form.location} onChange={event => setForm({ ...form, location: event.target.value })} placeholder="Where was it seen?"/></label></div><label>Details<textarea rows="3" maxLength="1000" value={form.description} onChange={event => setForm({ ...form, description: event.target.value })} placeholder="Color, identifying marks, or other helpful details"/></label><label>Photo URL (optional)<input type="url" value={form.imageUrl} onChange={event => setForm({ ...form, imageUrl: event.target.value })} placeholder="https://…"/></label><button className="submit-post" type="submit" disabled={saving}>{saving ? 'Posting…' : 'Post listing'} <ArrowUpRight size={16}/></button><small>A direct link to an image can be added above.</small></form></section></div>}
+    {activeItem && <div className="overlay" onMouseDown={event => event.target === event.currentTarget && setActiveItem(null)}><section className="dialog detail-dialog"><button className="dialog-close" onClick={() => setActiveItem(null)} aria-label="Close"><X size={19}/></button>{activeItem.imageUrl ? <img className="detail-photo" src={activeItem.imageUrl} alt={activeItem.name}/> : <div className="detail-photo detail-photo-placeholder"><Repeat2 size={42}/></div>}<span className={`status-tag detail-status ${activeItem.status.toLowerCase()}`}>{activeItem.status}</span><div className="listing-meta"><span>{activeItem.category}</span><span>{activeItem.age}</span></div><h2>{activeItem.name}</h2><p>{activeItem.description}</p><div className="card-location"><MapPin size={15}/><b>{activeItem.location}</b></div><button className="submit-post" onClick={() => setActiveItem(null)}>Close listing details <ArrowUpRight size={16}/></button><small>For a safe return, arrange a public handoff.</small></section></div>}
   </div>;
 }
 
